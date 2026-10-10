@@ -8,7 +8,7 @@ export default function Home() {
   const [banks, setBanks] = useState([]);
   const [settings, setSettings] = useState({ timerMinutes: 0, allBanksCount: 20 });
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ name: '', className: '', bankId: '' });
+  const [form, setForm] = useState({ name: '', className: '', bankId: '', count: '', timer: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -18,15 +18,26 @@ export default function Home() {
   const [timeLeft, setTimeLeft] = useState(null);
   const [result, setResult] = useState(null);
 
+  // ----- number of questions and timer: the student chooses both -----
+  const selBank = banks.find((b) => b.id === form.bankId);
+  const total = form.bankId === 'all' ? banks.reduce((n, b) => n + (b.count || 0), 0) : selBank?.count || 0;
+  const defaultCount = form.bankId === 'all' && settings.allBanksCount > 0 ? Math.min(settings.allBanksCount, total) : total;
+  const countOptions = [...new Set([5, 10, 15, 20, 25, 30, 40, 50, 75, 100].filter((n) => n < total).concat([total, defaultCount].filter((n) => n > 0)))].sort((a, b) => a - b);
+  const effCount = countOptions.map(String).includes(form.count) ? form.count : String(defaultCount);
+  const defaultTimer = Number(settings.timerMinutes) || 0;
+  const timerOptions = [...new Set([0, 5, 10, 15, 20, 30, 45, 60, 90, defaultTimer])].sort((a, b) => a - b);
+  const effTimer = timerOptions.map(String).includes(form.timer) ? form.timer : String(defaultTimer);
+
   useEffect(() => {
     fetch('/api/banks')
       .then((r) => r.json())
       .then((d) => {
+        if (d.error) throw new Error(d.error);
         setBanks(d.banks || []);
         setSettings(d.settings || settings);
         setForm((f) => ({ ...f, bankId: d.banks?.length ? d.banks[0].id : '' }));
       })
-      .catch(() => setErr('Could not load quizzes'))
+      .catch((e) => setErr(e.message || 'Could not load quizzes'))
       .finally(() => setLoading(false));
     // eslint-disable-next-line
   }, []);
@@ -39,7 +50,7 @@ export default function Home() {
       const r = await fetch('/api/quiz/start', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, count: effCount, timerMinutes: effTimer }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
@@ -96,6 +107,9 @@ export default function Home() {
 
   function pick(i) {
     setAnswers((a) => a.map((v, k) => (k === idx ? i : v)));
+  }
+  function updateFreeText(value) {
+    setAnswers((a) => a.map((v, k) => (k === idx ? value : v)));
   }
   function restart() {
     setStage('home');
@@ -154,12 +168,31 @@ export default function Home() {
               ))}
               {banks.length > 1 && (
                 <option value="all">
-                  🎲 All topics mixed{settings.allBanksCount > 0 ? ` (${settings.allBanksCount} random questions)` : ''}
+                  🎲 All topics mixed (random questions)
                 </option>
               )}
             </select>
           )}
-          {settings.timerMinutes > 0 && <p className="sub" style={{ marginTop: 10 }}>⏱ Time limit: {settings.timerMinutes} minutes</p>}
+          {total > 0 && (
+            <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+              <div className="grow">
+                <label>Number of questions</label>
+                <select value={effCount} onChange={(e) => setForm({ ...form, count: e.target.value })}>
+                  {countOptions.map((n) => (
+                    <option key={n} value={n}>{n === total ? `All ${n} questions` : `${n} questions`}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grow">
+                <label>Timer</label>
+                <select value={effTimer} onChange={(e) => setForm({ ...form, timer: e.target.value })}>
+                  {timerOptions.map((m) => (
+                    <option key={m} value={m}>{m === 0 ? 'No timer' : `${m} minutes`}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
           {err && <div className="err">{err}</div>}
           <div style={{ marginTop: 16 }}>
             <button onClick={start} disabled={busy || !banks.length}>{busy ? 'Starting…' : 'Start quiz'}</button>
@@ -174,6 +207,10 @@ export default function Home() {
   if (stage === 'quiz' && quiz) {
     const q = quiz.questions[idx];
     const done = answers.filter((a) => a !== null).length;
+    const questionType = q?.type || (Array.isArray(q?.options) && q.options.length > 0 ? 'mcq' : 'short_answer');
+    const hasOptions = Array.isArray(q?.options) && q.options.length > 0;
+    const currentAnswer = answers[idx];
+
     return (
       <>
         <div className="band"><div className="wrap bandin">
@@ -187,11 +224,22 @@ export default function Home() {
         <div className="wrap pull">
         <div className="card" key={idx}>
           <div className="qtext" dir="auto">{q.text}</div>
-          {q.options.map((o, i) => (
-            <button key={i} className={'opt' + (answers[idx] === i ? ' sel' : '')} onClick={() => pick(i)} dir="auto">
-              <span className="letter">{L[i]}</span><span>{o}</span>
-            </button>
-          ))}
+          {q.image && <img src={q.image} alt="Question visual" style={{ maxWidth: '100%', borderRadius: 12, margin: '12px 0', display: 'block' }} />}
+          {hasOptions && (questionType === 'mcq' || questionType === 'true_false') ? (
+            q.options.map((o, i) => (
+              <button key={i} className={'opt' + (answers[idx] === i ? ' sel' : '')} onClick={() => pick(i)} dir="auto">
+                <span className="letter">{L[i]}</span><span>{o}</span>
+              </button>
+            ))
+          ) : (
+            <textarea
+              value={typeof currentAnswer === 'string' || typeof currentAnswer === 'number' ? String(currentAnswer) : ''}
+              onChange={(e) => updateFreeText(e.target.value)}
+              placeholder={questionType === 'numeric' ? 'Type the numeric answer' : 'Type your answer'}
+              style={{ width: '100%', minHeight: 110, marginTop: 10 }}
+              dir="auto"
+            />
+          )}
           {err && <div className="err">{err}</div>}
           <div className="row between" style={{ marginTop: 14 }}>
             <button className="ghost" disabled={idx === 0} onClick={() => setIdx(idx - 1)}>← Back</button>
@@ -240,12 +288,17 @@ export default function Home() {
         {result.review.map((r, n) => (
           <div className="card rev" key={n}>
             <div className="qtext" dir="auto">{n + 1}. {r.text}</div>
-            {r.options.map((o, i) => (
-              <div key={i} className={'opt ' + (i === r.correct ? 'ok' : i === r.chosen ? 'bad' : '')} dir="auto">
-                <span className="letter">{L[i]}</span>
-                <span>{o}{i === r.correct ? '  ✓' : i === r.chosen ? '  ✗ (your answer)' : ''}</span>
-              </div>
-            ))}
+            {r.image && <img src={r.image} alt="Question visual" style={{ maxWidth: '100%', borderRadius: 12, margin: '12px 0', display: 'block' }} />}
+            {Array.isArray(r.options) && r.options.length > 0 ? (
+              r.options.map((o, i) => (
+                <div key={i} className={'opt ' + (i === r.correct ? 'ok' : i === r.chosen ? 'bad' : '')} dir="auto">
+                  <span className="letter">{L[i]}</span>
+                  <span>{o}{i === r.correct ? '  ✓' : i === r.chosen ? '  ✗ (your answer)' : ''}</span>
+                </div>
+              ))
+            ) : (
+              <div className="sub" dir="auto">Your answer: {r.chosen === null || r.chosen === undefined ? 'Not answered' : String(r.chosen)}</div>
+            )}
             {r.chosen === null && <div className="sub">Not answered</div>}
             {r.explanation && <div className="expl" dir="auto">💡 {r.explanation}</div>}
           </div>

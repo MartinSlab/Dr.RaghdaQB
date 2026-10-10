@@ -1,9 +1,10 @@
+import { safe } from '../../../../lib/api';
 import { randomUUID } from 'crypto';
 import { redis, getSettings, shuffle } from '../../../../lib/db';
 export const dynamic = 'force-dynamic';
 
-export async function POST(req) {
-  const { name, className, bankId } = await req.json();
+async function POST_impl(req) {
+  const { name, className, bankId, count, timerMinutes } = await req.json();
   if (!name?.trim() || !className?.trim()) {
     return Response.json({ error: 'Name and class are required' }, { status: 400 });
   }
@@ -23,7 +24,14 @@ export async function POST(req) {
   if (!pool.length) return Response.json({ error: 'No questions available' }, { status: 404 });
 
   pool = shuffle(pool);
-  if (isAll && settings.allBanksCount > 0) pool = pool.slice(0, settings.allBanksCount);
+  // the student chooses how many questions; without a choice fall back to the teacher's default
+  const wanted = parseInt(count, 10);
+  if (wanted > 0) pool = pool.slice(0, wanted);
+  else if (isAll && settings.allBanksCount > 0) pool = pool.slice(0, settings.allBanksCount);
+  const chosenTimer = Number(timerMinutes);
+  const timer = timerMinutes === undefined || timerMinutes === '' || !Number.isFinite(chosenTimer)
+    ? settings.timerMinutes
+    : Math.max(0, Math.min(300, Math.floor(chosenTimer)));
 
   const sessionId = randomUUID();
   const quizName = isAll ? 'All topics' : banks[bankId].name;
@@ -42,8 +50,15 @@ export async function POST(req) {
   return Response.json({
     sessionId,
     quizName,
-    timerMinutes: settings.timerMinutes,
+    timerMinutes: timer,
     // answers are NOT sent to the browser
-    questions: pool.map((p) => ({ text: p.q.text, options: p.q.options })),
+    questions: pool.map((p) => ({
+      text: p.q.text,
+      type: p.q.type || (Array.isArray(p.q.options) && p.q.options.length > 0 ? 'mcq' : 'short_answer'),
+      image: p.q.image || '',
+      options: Array.isArray(p.q.options) ? p.q.options : [],
+    })),
   });
 }
+
+export const POST = safe(POST_impl);

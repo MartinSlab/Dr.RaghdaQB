@@ -7,6 +7,9 @@ const body = Figtree({ subsets: ['latin'], variable: '--font-body' });
 export const metadata = {
   title: 'Physics Quiz',
   description: 'Interactive physics question bank',
+  icons: {
+    icon: '/icon.svg',
+  },
 };
 
 export const viewport = { themeColor: '#05061a' };

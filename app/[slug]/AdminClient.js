@@ -12,7 +12,7 @@ export default function AdminClient() {
   async function api(path, opts = {}, password = pw) {
     const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), 'x-admin-password': password } });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || 'Request failed');
+    if (!r.ok) throw new Error(d.error || `Request failed (${r.status})`);
     return d;
   }
 
@@ -87,10 +87,11 @@ function Upload({ api, onSaved }) {
       setProgress({ done: 0, total: 1, label: 'Reading file…' });
       const fd = new FormData();
       fd.append('file', file);
-      const { chunks } = await api('/api/admin/parse', { method: 'POST', body: fd });
+      const { chunks, images = {} } = await api('/api/admin/parse', { method: 'POST', body: fd });
       const all = [];
-      let failed = 0;
+      let failed = 0, lastErr = '';
       for (let i = 0; i < chunks.length; i++) {
+        const chunkImages = (chunks[i].imageIds || []).map((id) => ({ id, src: images[id] })).filter((x) => x.src);
         setProgress({ done: i, total: chunks.length, label: `AI is reading & solving part ${i + 1} of ${chunks.length}…` });
         let ok = false;
         for (let attempt = 0; attempt < 2 && !ok; attempt++) {
@@ -98,26 +99,47 @@ function Upload({ api, onSaved }) {
             const d = await api('/api/admin/solve', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ text: chunks[i] }),
+              body: JSON.stringify({ text: chunks[i].text, images: chunkImages }),
             });
-            all.push(...d.questions);
+            all.push(...(d.questions || []));
             ok = true;
           } catch (e) {
+            lastErr = e.message;
             if (attempt === 1) failed++;
           }
         }
       }
       setProgress(null);
-      if (!all.length) return setErr('No questions were found. Check the file format and your API key.');
-      if (failed) setWarn(`${failed} part(s) of the file failed and were skipped. You can upload again, or add the missing questions later.`);
+      // remove repeated questions
+      const seen = new Set();
+      const unique = [];
+      for (const q of all) {
+        const k = (q.text + '|' + q.options.join('|') + '|' + (q.image || '').slice(-60)).toLowerCase().replace(/\s+/g, ' ');
+        if (seen.has(k)) continue;
+        seen.add(k);
+        unique.push(q);
+      }
+      const dups = all.length - unique.length;
+      if (!unique.length) return setErr(lastErr || 'No multiple-choice questions were found in this file.');
+      const msgs = [];
+      if (dups) msgs.push(`${dups} repeated question(s) were removed.`);
+      if (failed) msgs.push(`${failed} part(s) of the file failed (${lastErr}). Upload again to retry.`);
+      setWarn(msgs.join(' '));
       if (!name) setName(file.name.replace(/\.docx$/i, ''));
-      setQuestions(all);
+      setQuestions(unique);
     } catch (e) {
       setProgress(null);
       setErr(e.message);
     }
   }
 
+  function attachImage(i, f) {
+    if (!f) return;
+    if (f.size > 900_000) return setErr('Picture is too large (max 900 KB).');
+    const r = new FileReader();
+    r.onload = () => upd(i, { image: r.result, note: '' });
+    r.readAsDataURL(f);
+  }
   const upd = (i, patch) => setQuestions((qs) => qs.map((q, k) => (k === i ? { ...q, ...patch } : q)));
   const updOpt = (i, j, v) => setQuestions((qs) => qs.map((q, k) => (k === i ? { ...q, options: q.options.map((o, m) => (m === j ? v : o)) } : q)));
 
@@ -143,7 +165,7 @@ function Upload({ api, onSaved }) {
     <div>
       <div className="card">
         <h2>Upload a Word file (.docx)</h2>
-        <p className="sub">The AI finds each multiple-choice question. If the file has answers they are used; otherwise the AI solves them. You can review and edit everything before publishing.</p>
+        <p className="sub">The AI finds the multiple-choice questions (including ones whose options are pictures), keeps each picture with its question, and solves them when the file has no answers. Written questions (terms, calculations, short answers) are converted to multiple choice with 3 wrong choices. Review everything before publishing.</p>
         <input type="file" accept=".docx" onChange={(e) => setFile(e.target.files?.[0] || null)} />
         <div style={{ marginTop: 12 }}>
           <button onClick={process} disabled={!!progress}>Process file</button>
@@ -171,17 +193,33 @@ function Upload({ api, onSaved }) {
             {questions.map((q, i) => (
               <div className="qedit" key={i}>
                 <div className="row between">
-                  <strong>Q{i + 1} <span className={'badge ' + q.source}>{q.source === 'file' ? 'from file' : q.source === 'ai' ? 'AI solved' : 'check'}</span></strong>
+                  <strong>Q{i + 1} {q.converted && <span className="badge file" style={{ background: '#fff3d6', color: '#8a5a00' }}>from written</span>} <span className={'badge ' + q.source}>{q.source === 'file' ? 'from file' : q.source === 'ai' ? 'AI solved' : 'check'}</span></strong>
                   <button className="danger small" onClick={() => setQuestions((qs) => qs.filter((_, k) => k !== i))}>Delete</button>
                 </div>
                 <textarea value={q.text} onChange={(e) => upd(i, { text: e.target.value })} dir="auto" />
-                {q.options.map((o, j) => (
-                  <div className="optrow" key={j}>
-                    <input type="radio" name={'c' + i} checked={q.answer === j} onChange={() => upd(i, { answer: j, source: q.source === 'unknown' ? 'ai' : q.source })} title="Mark as correct" />
-                    <span className="letter">{L[j]}</span>
-                    <input type="text" value={o} onChange={(e) => updOpt(i, j, e.target.value)} dir="auto" />
+                {q.note && <div className="err">{q.note}</div>}
+                {q.image && <img src={q.image} alt="Question visual" style={{ maxWidth: '100%', borderRadius: 12, margin: '12px 0', display: 'block', background: '#fff' }} />}
+                <div className="row" style={{ margin: '6px 0' }}>
+                  <label className="small ghost" style={{ display: 'inline-block', margin: 0, padding: '6px 12px', border: '2px solid var(--line)', borderRadius: 10, cursor: 'pointer' }}>
+                    {q.image ? 'Replace picture' : 'Attach picture'}
+                    <input type="file" accept="image/*" hidden onChange={(e) => attachImage(i, e.target.files?.[0])} />
+                  </label>
+                  {q.image && <button className="ghost small" onClick={() => upd(i, { image: '' })}>Remove picture</button>}
+                </div>
+                {Array.isArray(q.options) && q.options.length > 0 ? (
+                  q.options.map((o, j) => (
+                    <div className="optrow" key={j}>
+                      <input type="radio" name={'c' + i} checked={q.answer === j} onChange={() => upd(i, { answer: j, source: q.source === 'unknown' ? 'ai' : q.source })} title="Mark as correct" />
+                      <span className="letter">{L[j]}</span>
+                      <input type="text" value={o} onChange={(e) => updOpt(i, j, e.target.value)} dir="auto" />
+                    </div>
+                  ))
+                ) : (
+                  <div>
+                    <label>Correct answer</label>
+                    <textarea value={String(q.answer ?? '')} onChange={(e) => upd(i, { answer: e.target.value })} dir="auto" style={{ minHeight: 44 }} />
                   </div>
-                ))}
+                )}
                 <label>Explanation</label>
                 <textarea value={q.explanation} onChange={(e) => upd(i, { explanation: e.target.value })} dir="auto" style={{ minHeight: 44 }} />
               </div>
@@ -297,9 +335,9 @@ function Settings({ api }) {
   return (
     <div className="card">
       <h2>Settings</h2>
-      <label>Timer (minutes) — 0 means no timer</label>
+      <label>Default timer (minutes) — students can change it. 0 means no timer</label>
       <input type="number" min="0" value={s.timerMinutes} onChange={(e) => setS({ ...s, timerMinutes: e.target.value })} />
-      <label>Questions in the “All topics mixed” quiz — 0 means use every question</label>
+      <label>Default number of questions for “All topics mixed” — students can change it</label>
       <input type="number" min="0" value={s.allBanksCount} onChange={(e) => setS({ ...s, allBanksCount: e.target.value })} />
       {msg && <div className="msg">{msg}</div>}
       <div style={{ marginTop: 14 }}><button onClick={save}>Save settings</button></div>

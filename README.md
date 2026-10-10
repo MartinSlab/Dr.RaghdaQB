@@ -23,3 +23,10 @@ npm install
 cp .env.example .env.local   # fill values
 npm run dev
 ```
+
+## Database check
+Open `https://your-site.vercel.app/api/health` — it must show `{"ok":true}`.
+If it shows an error, the message says what to fix. The usual causes:
+1. `MONGODB_URI` is missing → add it in Vercel → Settings → Environment Variables (and in `.env` locally), then redeploy.
+2. MongoDB Atlas → Network Access → add `0.0.0.0/0`.
+3. Wrong password in the URI (URL-encode special characters).

@@ -1,13 +1,14 @@
+import { safe } from '../../../../lib/api';
 import { redis, getSettings } from '../../../../lib/db';
 import { isAdmin, unauthorized } from '../../../../lib/auth';
 export const dynamic = 'force-dynamic';
 
-export async function GET(req) {
+async function GET_impl(req) {
   if (!isAdmin(req)) return unauthorized();
   return Response.json(await getSettings());
 }
 
-export async function POST(req) {
+async function POST_impl(req) {
   if (!isAdmin(req)) return unauthorized();
   const b = await req.json();
   const settings = {
@@ -17,3 +18,6 @@ export async function POST(req) {
   await redis.set('settings', settings);
   return Response.json(settings);
 }
+
+export const GET = safe(GET_impl);
+export const POST = safe(POST_impl);

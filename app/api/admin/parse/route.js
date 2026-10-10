@@ -1,11 +1,11 @@
-import mammoth from 'mammoth';
+import { safe } from '../../../../lib/api';
 import { isAdmin, unauthorized } from '../../../../lib/auth';
-import { splitDocument } from '../../../../lib/chunk';
+import { parseDocx } from '../../../../lib/docx';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-export async function POST(req) {
+async function POST_impl(req) {
   if (!isAdmin(req)) return unauthorized();
   const form = await req.formData();
   const file = form.get('file');
@@ -16,8 +16,9 @@ export async function POST(req) {
     return Response.json({ error: 'Please upload a .docx file (Word 2007 or newer)' }, { status: 400 });
   }
   const buffer = Buffer.from(await file.arrayBuffer());
-  const { value } = await mammoth.extractRawText({ buffer });
-  if (!value.trim()) return Response.json({ error: 'The file looks empty' }, { status: 400 });
-  const chunks = splitDocument(value);
-  return Response.json({ chunks, chars: value.length });
+  const { chunks, images, imageCount } = await parseDocx(buffer);
+  if (!chunks.length) return Response.json({ error: 'The file looks empty' }, { status: 400 });
+  return Response.json({ chunks, images, imageCount });
 }
+
+export const POST = safe(POST_impl);
